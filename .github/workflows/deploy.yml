@@ -9,10 +9,10 @@ env:
   IMAGE_NAME: axum_api
 
 jobs:
-  # --- JOB 1: ตรวจสอบโค้ด ---
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,14 +41,15 @@ jobs:
       - name: Run tests
         run: cargo test --release
 
-  # --- JOB 2: สร้างและ Push Docker Image ---
   docker:
     name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: build-and-test
+
     permissions:
       contents: read
       packages: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -83,44 +84,39 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # --- JOB 3: Deploy ไปยัง Server (ส่วนที่มีการแก้ไข) ---
   deploy:
     name: Deploy to Server
     runs-on: ubuntu-latest
     needs: docker
+    timeout-minutes: 10
+
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          # ส่งตัวแปรเพื่อให้คำสั่ง docker compose pull ทำงานได้
-          envs: GH_REPO_OWNER,IMAGE_NAME
-        env:
-          GH_REPO_OWNER: ${{ github.repository_owner }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-        with:
-          script: |
-            cd /home/dserver/share_folder/application/axum_api
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-            # สร้างไฟล์ .env จากค่าใน GitHub Secrets
-            cat > .env << ENVEOF
-            GH_REPO_OWNER=$GH_REPO_OWNER
-            IMAGE_NAME=$IMAGE_NAME
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-            REDIS_URL=redis://:${{ secrets.REDIS_PASSWORD }}@redis:6379
-            CF_TUNNEL_TOKEN=${{ secrets.CF_TUNNEL_TOKEN }}
-            PORT=4000
-            RUST_LOG=axum_api=info
-            ENVEOF
+      - name: Add server to known hosts
+        run: ssh-keyscan -p ${{ secrets.SSH_PORT }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-            # Login และสั่ง Deploy
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Deploy
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'ENDSSH'
+          set -e
+          cd /home/dserver/share_folder/application/axum_api
 
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
+          export DATABASE_URL="${{ secrets.DATABASE_URL }}"
+          export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+          export REDIS_PASSWORD="${{ secrets.REDIS_PASSWORD }}"
+          export CF_TUNNEL_TOKEN="${{ secrets.CF_TUNNEL_TOKEN }}"
+          export GH_REPO_OWNER="${{ github.repository_owner }}"
+          export IMAGE_NAME="axum_api"
+          export PORT="4000"
+          export RUST_LOG="axum_api=info"
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker image prune -f
+          ENDSSH
