@@ -11,6 +11,7 @@ use serde_json::json;
 pub enum AppError {
     BadRequest(String),
     Unauthorized(String),
+    #[allow(dead_code)]
     NotFound(String),
     Internal(String),
 }

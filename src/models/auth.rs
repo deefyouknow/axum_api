@@ -12,6 +12,7 @@ pub struct Claims {
 /// Database row for the `certificate` table.
 #[derive(Debug, FromRow)]
 pub struct UserRow {
+    #[allow(dead_code)]
     pub username: String,
     pub password: String,
 }

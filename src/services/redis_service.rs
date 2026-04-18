@@ -4,6 +4,7 @@ use redis::Client;
 use crate::error::AppError;
 
 /// TTL presets (seconds) — keeps RAM bounded.
+#[allow(dead_code)]
 pub mod ttl {
     pub const SHORT: u64 = 60;        // 1 min  — rate-limit keys, OTP
     pub const MEDIUM: u64 = 300;      // 5 min  — login cache
@@ -45,6 +46,7 @@ impl Redis {
     }
 
     /// GET — returns None on cache miss.
+    #[allow(dead_code)]
     pub async fn get(&self, key: &str) -> Result<Option<String>, AppError> {
         let mut conn = self.conn.clone();
         let result: Option<String> = redis::cmd("GET")
@@ -56,6 +58,7 @@ impl Redis {
     }
 
     /// DEL — returns true if the key existed.
+    #[allow(dead_code)]
     pub async fn del(&self, key: &str) -> Result<bool, AppError> {
         let mut conn = self.conn.clone();
         let result: i32 = redis::cmd("DEL")

@@ -53,6 +53,7 @@ pub fn generate_jwt(username: &str, secret: &str) -> Result<String, AppError> {
     Ok(token)
 }
 
+#[allow(dead_code)]
 pub fn decode_jwt(token: &str, secret: &str) -> Result<Claims, AppError> {
     let data = decode::<Claims>(
         token,

@@ -99,7 +99,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
 
           script: |
-            cd /opt/axum_api
+            cd /home/dserver/share_folder/application/axum_api
 
             cat > .env << 'ENVEOF'
             DATABASE_URL=${{ secrets.DATABASE_URL }}
