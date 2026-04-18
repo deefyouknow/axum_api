@@ -38,13 +38,14 @@ async fn main() {
         .max_connections(20) // 1. เพิ่มจำนวนท่อถ้าแรมไหว (5 น้อยไปสำหรับระบบจริง)
         .min_connections(2) // 2. รักษาท่อขั้นต่ำให้ "เปิดค้างไว้" ตลอดเวลาเหมือน Wi-Fi
         .acquire_timeout(std::time::Duration::from_secs(30)) // 3. ให้เวลาชะเง้อรอท่อนานขึ้นหน่อย
-        .idle_timeout(std::time::Duration::from_secs(600)) // 4. ท่อไหนไม่ใช้ 10 นาทีค่อยปิด
+        .idle_timeout(std::time::Duration::from_secs(300)) // 4. ลดจาก 10 → 5 นาที ให้ pool ไล่ท่อเก่าทิ้งก่อน firewall ตัด
         .max_lifetime(std::time::Duration::from_secs(1800)) // 5. ล้างท่อใหม่ทุก 30 นาทีป้องกันท่อเสื่อม
-        .test_before_acquire(true) // 6. *** หัวใจสำคัญ: เช็คก่อนว่าท่อยังใช้งานได้ไหมก่อนส่งให้ Handler
-        .connect_lazy(&db_url)
-        .expect("Invalid DATABASE_URL format");
+        .test_before_acquire(false) // 6. ปิด ping ก่อนใช้ท่อ — ลด 1 round-trip ทุก request (idle_timeout จัดการท่อตายแทน)
+        .connect(&db_url) // 7. เชื่อมทันทีตอน start — request แรกไม่ต้องรอ TCP+TLS+PG auth อีกต่อไป
+        .await
+        .expect("Failed to connect to database");
 
-    tracing::info!("Database pool ready (lazy mode)");
+    tracing::info!("Database pool ready ({} connections)", 2);
 
     // ── Redis (optional) ──────────────────────────────────
     let redis = match std::env::var("REDIS_URL") {
@@ -78,5 +79,10 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     tracing::info!("🦀 Server listening on http://{addr}");
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

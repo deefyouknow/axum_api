@@ -30,13 +30,14 @@ impl Redis {
         Ok(Self { conn })
     }
 
-    /// SET with mandatory TTL (seconds) — prevents orphan keys eating RAM.
+    /// SET key value EX ttl — mandatory TTL (seconds) prevents orphan keys eating RAM.
     pub async fn set(&self, key: &str, value: &str, ttl_secs: u64) -> Result<(), AppError> {
         let mut conn = self.conn.clone();
-        let _: () = redis::cmd("SETEX")
+        let _: () = redis::cmd("SET")
             .arg(key)
-            .arg(ttl_secs)
             .arg(value)
+            .arg("EX")
+            .arg(ttl_secs)
             .query_async(&mut conn)
             .await
             .map_err(|e| AppError::Internal(format!("Redis SET error: {e}")))?;

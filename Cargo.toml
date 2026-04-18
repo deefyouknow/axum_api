@@ -15,4 +15,7 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.26", features = ["tokio-comp", "connection-manager"] }
+
+[dev-dependencies]
+tokio-postgres = "0.7.17"

@@ -2,18 +2,34 @@
 use chrono::Utc;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use sqlx::PgPool;
+use tokio::task;
 
 use crate::error::AppError;
 use crate::models::auth::{Claims, UserRow};
 
 // ── Password ──────────────────────────────────────────────
 
-pub fn hash_password(raw: &str) -> Result<String, AppError> {
-    Ok(bcrypt::hash(raw, bcrypt::DEFAULT_COST)?)
+// ย้าย bcrypt ไปรันบน blocking thread pool — ป้องกันไม่ให้บล็อก tokio worker thread
+// bcrypt เป็น CPU-heavy sync operation ใช้เวลา ~250-400ms ต่อครั้ง
+pub async fn hash_password(raw: &str) -> Result<String, AppError> {
+    let raw = raw.to_owned();
+    task::spawn_blocking(move || {
+        bcrypt::hash(&raw, bcrypt::DEFAULT_COST)
+            .map_err(AppError::from)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("spawn_blocking error: {e}")))?
 }
 
-pub fn verify_password(raw: &str, hash: &str) -> Result<bool, AppError> {
-    Ok(bcrypt::verify(raw, hash)?)
+pub async fn verify_password(raw: &str, hash: &str) -> Result<bool, AppError> {
+    let raw = raw.to_owned();
+    let hash = hash.to_owned();
+    task::spawn_blocking(move || {
+        bcrypt::verify(&raw, &hash)
+            .map_err(AppError::from)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("spawn_blocking error: {e}")))?
 }
 
 // ── JWT ───────────────────────────────────────────────────
