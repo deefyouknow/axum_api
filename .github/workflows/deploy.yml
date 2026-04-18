@@ -1,90 +1,4 @@
-name: Deploy Axum API
-
-on:
-  push:
-    branches:
-      - main
-
-env:
-  IMAGE_NAME: axum_api
-
-jobs:
-  build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-
-
-      - name: Check compile
-        run: cargo check --release
-
-      - name: Clippy lint
-        run: cargo clippy --release -- -D warnings
-
-      - name: Run tests
-        run: cargo test --release
-
-  docker:
-    name: Docker Build & Push
-    runs-on: ubuntu-latest
-    needs: build-and-test
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy:
+deploy:
     name: Deploy to Server
     runs-on: ubuntu-latest
     needs: docker
@@ -97,23 +11,34 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
+          # 🟢 [จุดที่ต้องเพิ่ม] ส่งตัวแปรเข้าไปใน SSH Session
+          envs: GH_REPO_OWNER,IMAGE_NAME
+        env:
+          GH_REPO_OWNER: ${{ github.repository_owner }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
 
-          script: |
-            cd /home/dserver/share_folder/application/axum_api
+        script: |
+          # 1. ไปที่โฟลเดอร์โปรเจกต์
+          cd /home/dserver/share_folder/application/axum_api
 
-            cat > .env << 'ENVEOF'
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-            REDIS_URL=redis://:${{ secrets.REDIS_PASSWORD }}@redis:6379
-            CF_TUNNEL_TOKEN=${{ secrets.CF_TUNNEL_TOKEN }}
-            PORT=4000
-            RUST_LOG=axum_api=info
-            ENVEOF
+          # 2. เขียนไฟล์ .env (เพิ่ม GH_REPO_OWNER และ IMAGE_NAME ลงไปด้วย)
+          cat > .env << ENVEOF
+          GH_REPO_OWNER=$GH_REPO_OWNER
+          IMAGE_NAME=$IMAGE_NAME
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+          REDIS_URL=redis://:${{ secrets.REDIS_PASSWORD }}@redis:6379
+          CF_TUNNEL_TOKEN=${{ secrets.CF_TUNNEL_TOKEN }}
+          PORT=4000
+          RUST_LOG=axum_api=info
+          ENVEOF
 
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          # 3. ล็อกอินและรัน Docker
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            docker compose pull
-            docker compose up -d --remove-orphans
+          docker compose pull
+          docker compose up -d --remove-orphans
 
-            docker image prune -f
+          # 4. ล้าง Image เก่า
+          docker image prune -f
