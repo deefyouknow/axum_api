@@ -36,11 +36,11 @@ async fn main() {
     // ── Database ──────────────────────────────────────────
     let pool = PgPoolOptions::new()
         .max_connections(20) // 1. เพิ่มจำนวนท่อถ้าแรมไหว (5 น้อยไปสำหรับระบบจริง)
-        .min_connections(2) // 2. รักษาท่อขั้นต่ำให้ "เปิดค้างไว้" ตลอดเวลาเหมือน Wi-Fi
+        .min_connections(0) // 2. ปรับเป็น 0 เพื่อให้ระบบสามารถปิดท่อทั้งหมดได้ถ้าระบบว่างจัดๆ ป้องกันปัญหาท่อค้าง
         .acquire_timeout(std::time::Duration::from_secs(30)) // 3. ให้เวลาชะเง้อรอท่อนานขึ้นหน่อย
         .idle_timeout(std::time::Duration::from_secs(300)) // 4. ลดจาก 10 → 5 นาที ให้ pool ไล่ท่อเก่าทิ้งก่อน firewall ตัด
         .max_lifetime(std::time::Duration::from_secs(1800)) // 5. ล้างท่อใหม่ทุก 30 นาทีป้องกันท่อเสื่อม
-        .test_before_acquire(false) // 6. ปิด ping ก่อนใช้ท่อ — ลด 1 round-trip ทุก request (idle_timeout จัดการท่อตายแทน)
+        .test_before_acquire(true) // 6. สำคัญมาก: เปิด Ping เช็คก่อนใช้งาน เพื่อกันปัญหา "ท่อตาย" แล้วทำให้แอปค้างไปหลายนาที
         .connect(&db_url) // 7. เชื่อมทันทีตอน start — request แรกไม่ต้องรอ TCP+TLS+PG auth อีกต่อไป
         .await
         .expect("Failed to connect to database");
