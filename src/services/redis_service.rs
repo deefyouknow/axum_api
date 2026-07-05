@@ -1,15 +1,12 @@
+// src/services/redis_service.rs
 use redis::aio::ConnectionManager;
 use redis::Client;
 
 use crate::error::AppError;
 
 /// TTL presets (seconds) — keeps RAM bounded.
-#[allow(dead_code)]
 pub mod ttl {
-    pub const SHORT: u64 = 60;        // 1 min  — rate-limit keys, OTP
-    pub const MEDIUM: u64 = 300;      // 5 min  — login cache
-    pub const LONG: u64 = 3600;       // 1 hour — session data
-    pub const MAX: u64 = 86400;       // 24 hr  — daily counters
+    pub const SHORT: u64 = 60; // 1 min — rate-limit keys
 }
 
 /// Thin Redis wrapper — all writes require a TTL.
@@ -43,30 +40,6 @@ impl Redis {
             .await
             .map_err(|e| AppError::Internal(format!("Redis SET error: {e}")))?;
         Ok(())
-    }
-
-    /// GET — returns None on cache miss.
-    #[allow(dead_code)]
-    pub async fn get(&self, key: &str) -> Result<Option<String>, AppError> {
-        let mut conn = self.conn.clone();
-        let result: Option<String> = redis::cmd("GET")
-            .arg(key)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| AppError::Internal(format!("Redis GET error: {e}")))?;
-        Ok(result)
-    }
-
-    /// DEL — returns true if the key existed.
-    #[allow(dead_code)]
-    pub async fn del(&self, key: &str) -> Result<bool, AppError> {
-        let mut conn = self.conn.clone();
-        let result: i32 = redis::cmd("DEL")
-            .arg(key)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| AppError::Internal(format!("Redis DEL error: {e}")))?;
-        Ok(result > 0)
     }
 
     /// EXISTS — check if a key is present.

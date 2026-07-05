@@ -40,8 +40,8 @@ pub fn generate_jwt(username: &str, secret: &str) -> Result<String, AppError> {
 
     let claims = Claims {
         sub: username.to_owned(),
-        iat: now.timestamp() as usize,
-        exp: exp.timestamp() as usize,
+        iat: now.timestamp(),
+        exp: exp.timestamp(),
     };
 
     let token = encode(
@@ -53,7 +53,6 @@ pub fn generate_jwt(username: &str, secret: &str) -> Result<String, AppError> {
     Ok(token)
 }
 
-#[allow(dead_code)]
 pub fn decode_jwt(token: &str, secret: &str) -> Result<Claims, AppError> {
     let data = decode::<Claims>(
         token,
@@ -81,17 +80,21 @@ pub async fn find_user_by_username(
     Ok(user)
 }
 
+/// Create a new user with atomic INSERT ON CONFLICT to prevent race condition.
+/// Returns `true` if the user was created, `false` if the username already exists.
 pub async fn create_user(
     pool: &PgPool,
     username: &str,
     hashed_password: &str,
-) -> Result<(), AppError> {
-    sqlx::query("INSERT INTO certificate (username, password, role) VALUES ($1, $2, $3)")
-        .bind(username)
-        .bind(hashed_password)
-        .bind("guest")
-        .execute(pool)
-        .await?;
+) -> Result<bool, AppError> {
+    let result = sqlx::query(
+        "INSERT INTO certificate (username, password, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(username)
+    .bind(hashed_password)
+    .bind("guest")
+    .execute(pool)
+    .await?;
 
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }

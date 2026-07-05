@@ -2,3 +2,10 @@
 /target/
 .env
 /src/app/bin
+
+.agents
+context
+tests
+CLAUDE.md
+ROTER_COMMANDS_API.md
+skills-lock.json

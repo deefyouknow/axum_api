@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 /// JWT claims — embedded in every token.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String, // username
-    pub iat: usize,  // issued at (unix timestamp)
-    pub exp: usize,  // expiration (unix timestamp)
+    pub iat: i64,    // issued at (unix timestamp)
+    pub exp: i64,    // expiration (unix timestamp)
 }
 
 /// Database row for the `certificate` table.

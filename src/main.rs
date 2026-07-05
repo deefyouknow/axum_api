@@ -1,17 +1,9 @@
-mod error;
-mod handlers;
-mod models;
-mod routes;
-mod schemas;
-mod services;
-mod state;
-
 use dotenvy::dotenv;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 
-use crate::services::redis_service::Redis;
-use crate::state::AppState;
+use axum_api::services::redis_service::Redis;
+use axum_api::state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -35,17 +27,20 @@ async fn main() {
 
     // ── Database ──────────────────────────────────────────
     let pool = PgPoolOptions::new()
-        .max_connections(20) // 1. เพิ่มจำนวนท่อถ้าแรมไหว (5 น้อยไปสำหรับระบบจริง)
-        .min_connections(0) // 2. ปรับเป็น 0 เพื่อให้ระบบสามารถปิดท่อทั้งหมดได้ถ้าระบบว่างจัดๆ ป้องกันปัญหาท่อค้าง
-        .acquire_timeout(std::time::Duration::from_secs(30)) // 3. ให้เวลาชะเง้อรอท่อนานขึ้นหน่อย
-        .idle_timeout(std::time::Duration::from_secs(300)) // 4. ลดจาก 10 → 5 นาที ให้ pool ไล่ท่อเก่าทิ้งก่อน firewall ตัด
-        .max_lifetime(std::time::Duration::from_secs(1800)) // 5. ล้างท่อใหม่ทุก 30 นาทีป้องกันท่อเสื่อม
-        .test_before_acquire(true) // 6. สำคัญมาก: เปิด Ping เช็คก่อนใช้งาน เพื่อกันปัญหา "ท่อตาย" แล้วทำให้แอปค้างไปหลายนาที
-        .connect(&db_url) // 7. เชื่อมทันทีตอน start — request แรกไม่ต้องรอ TCP+TLS+PG auth อีกต่อไป
+        .max_connections(20)
+        .min_connections(0)
+        .acquire_timeout(std::time::Duration::from_secs(30))
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_lifetime(std::time::Duration::from_secs(1800))
+        .test_before_acquire(true)
+        .connect(&db_url)
         .await
         .expect("Failed to connect to database");
 
-    tracing::info!("Database pool ready ({} connections)", 2);
+    tracing::info!(
+        "Database pool ready (max {} connections)",
+        pool.options().get_max_connections()
+    );
 
     // ── Redis (optional) ──────────────────────────────────
     let redis = match std::env::var("REDIS_URL") {
@@ -65,14 +60,27 @@ async fn main() {
         }
     };
 
-    // ── State + Routes ────────────────────────────────────
+    // ── State ─────────────────────────────────────────────
     let state = AppState {
-        db: pool,
+        db: pool.clone(),
         jwt_secret,
         redis,
     };
 
-    let app = routes::auth_routes().with_state(state);
+    // ── Heartbeat scheduler ───────────────────────────────
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    axum_api::services::heartbeat::spawn(pool.clone(), shutdown_rx);
+
+    // ── Routes ────────────────────────────────────────────
+    let protected = axum_api::routes::protected_routes()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            axum_api::middleware::auth::require_auth,
+        ));
+
+    let app = axum_api::routes::public_routes()
+        .merge(protected)
+        .with_state(state);
 
     // ── Serve ─────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -83,6 +91,35 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal(shutdown_tx))
     .await
     .unwrap();
+}
+
+/// Wait for Ctrl+C, then signal all background tasks to stop.
+async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received, starting graceful shutdown");
+    let _ = shutdown_tx.send(true);
 }
