@@ -25,6 +25,6 @@ pub fn protected_routes() -> Router<AppState> {
         .route("/sensors/latest", get(sensor_handler::get_sensor_latest))
         .route("/commands", post(command_handler::create_command))
         .route("/commands/pending", get(command_handler::get_pending_commands))
-        .route("/commands/:id/response", patch(command_handler::update_command_response))
+        .route("/commands/{id}/response", patch(command_handler::update_command_response))
         .route("/commands/history", get(command_handler::get_command_history))
 }
