@@ -17,7 +17,9 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT }}
           script: |
-            cd /path/to/your/app
+            cd /home/dserver/share_folder/application/axum_api
+            git reset --hard
+            git clean -fd
             git pull origin main
             docker compose down
             docker compose up -d --build
