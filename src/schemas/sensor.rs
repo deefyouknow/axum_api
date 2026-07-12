@@ -5,7 +5,8 @@ use crate::models::sensor::SensorReading;
 
 /// POST /sensors/reading — single payload from ESP32 (all fields optional).
 /// Payload format is unchanged from the old 3-table design for backward compatibility.
-#[derive(Debug, Deserialize)]
+/// `Serialize` is required so the payload can be JSON-encoded into the Redis write-buffer.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SensorPayload {
     // Solar lux group (BH1750FVI left/right)
     pub lux_left: Option<i32>,

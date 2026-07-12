@@ -26,11 +26,20 @@ async fn main() {
         .expect("PORT must be a valid number");
 
     // ── Database ──────────────────────────────────────────
+    // acquire_timeout: 5 s — fail fast instead of queuing for 30 s.
+    //   When DB is slow the ESP32 will get a 503 quickly, retry, and the
+    //   Redis buffer will absorb the data in the meantime.
+    // min_connections: 2 — keep warm connections; avoids handshake latency
+    //   on the first request after an idle period.
+    // idle_timeout: 60 s — recycle connections that have been idle too long
+    //   (avoids ETIMEDOUT from the DB closing them on its side first).
+    // max_lifetime: 1800 s — periodically replace long-lived connections to
+    //   pick up fresh settings and avoid silent TCP resets.
     let pool = PgPoolOptions::new()
-        .max_connections(20)
-        .min_connections(0)
-        .acquire_timeout(std::time::Duration::from_secs(30))
-        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_connections(10)
+        .min_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .idle_timeout(std::time::Duration::from_secs(60))
         .max_lifetime(std::time::Duration::from_secs(1800))
         .test_before_acquire(true)
         .connect(&db_url)
@@ -46,16 +55,16 @@ async fn main() {
     let redis = match std::env::var("REDIS_URL") {
         Ok(url) => match Redis::connect(&url).await {
             Ok(r) => {
-                tracing::info!("Redis connected");
+                tracing::info!("Redis connected — sensor write-buffer enabled");
                 Some(r)
             }
             Err(e) => {
-                tracing::warn!("Redis unavailable, running without cache: {e}");
+                tracing::warn!("Redis unavailable, running without cache/buffer: {e}");
                 None
             }
         },
         Err(_) => {
-            tracing::info!("REDIS_URL not set, running without cache");
+            tracing::info!("REDIS_URL not set, running without cache/buffer");
             None
         }
     };
@@ -64,12 +73,12 @@ async fn main() {
     let state = AppState {
         db: pool.clone(),
         jwt_secret,
-        redis,
+        redis: redis.clone(),
     };
 
-    // ── Heartbeat scheduler ───────────────────────────────
+    // ── Background scheduler (flush buffer + heartbeat) ───
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    axum_api::services::heartbeat::spawn(pool.clone(), shutdown_rx);
+    axum_api::services::heartbeat::spawn(pool.clone(), redis, shutdown_rx);
 
     // ── Routes ────────────────────────────────────────────
     let protected = axum_api::routes::protected_routes()

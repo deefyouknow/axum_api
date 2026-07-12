@@ -15,12 +15,30 @@ use crate::{
 };
 
 /// POST /sensors/reading
-/// ESP32 sends a single JSON body per cycle with optional sensor fields.
-/// Inserts into the unified `sensor_readings` table.
+///
+/// **Fast path (Redis available):**  
+/// Pushes the payload onto the Redis write-buffer and returns 201 immediately
+/// (~1 ms). The background flusher drains the buffer into PostgreSQL every 5 s.
+///
+/// **Slow path (Redis unavailable):**  
+/// Falls back to a direct INSERT into PostgreSQL (original behaviour).
 pub async fn post_sensor_reading(
     State(state): State<AppState>,
     Json(payload): Json<SensorPayload>,
 ) -> Result<(StatusCode, Json<SensorInsertedResponse>), AppError> {
+    if let Some(ref redis) = state.redis {
+        // Fast path — buffer in Redis, respond immediately
+        sensor_service::buffer_sensor_reading(redis, &payload).await?;
+
+        let resp = SensorInsertedResponse {
+            success: true,
+            id: None,   // id is assigned by PostgreSQL on flush
+            time: None, // likewise — not yet persisted
+        };
+        return Ok((StatusCode::CREATED, Json(resp)));
+    }
+
+    // Slow path — direct INSERT (Redis not configured)
     let result = sensor_service::insert_sensor_reading(&state.db, payload).await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
