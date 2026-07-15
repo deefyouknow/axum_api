@@ -1,6 +1,7 @@
 services:
 
   axum_api:
+    build: .
     image: ghcr.io/${GH_REPO_OWNER}/${IMAGE_NAME}:latest
     container_name: axum_api
     restart: unless-stopped
