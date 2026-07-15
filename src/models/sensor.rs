@@ -15,7 +15,9 @@ pub struct SensorReading {
     pub lux_ml: Option<i32>,
     pub lux_mr: Option<i32>,
     pub lux_r: Option<i32>,
-    pub roter_angle: Option<i32>,
+    pub ina_voltage: Option<i32>,   // millivolts
+    pub ina_current: Option<i32>,   // milliamps
+    pub ina_power: Option<i32>,     // milliwatts
     pub limit_sw_left: Option<bool>,
     pub limit_sw_right: Option<bool>,
 }

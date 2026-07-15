@@ -51,6 +51,37 @@ async fn main() {
         pool.options().get_max_connections()
     );
 
+    // ── Auto-migration: ensure roter_commands table exists ────────────────────
+    match sqlx::query(
+        "CREATE TABLE IF NOT EXISTS roter_commands (
+            id              BIGSERIAL   PRIMARY KEY,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            source          TEXT        NOT NULL DEFAULT 'manual',
+            target_lux_l    INTEGER,
+            target_lux_r    INTEGER,
+            status          TEXT        NOT NULL DEFAULT 'pending',
+            executed_at     TIMESTAMPTZ,
+            completed_at    TIMESTAMPTZ,
+            lux_left        INTEGER,
+            lux_right       INTEGER,
+            response_note   TEXT
+        )"
+    )
+    .execute(&pool)
+    .await
+    {
+        Ok(_) => {
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_roter_cmd_status ON roter_commands (status)")
+                .execute(&pool).await.ok();
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_roter_cmd_time ON roter_commands (created_at DESC)")
+                .execute(&pool).await.ok();
+            tracing::info!("Auto-migration: roter_commands table ready");
+        }
+        Err(e) => {
+            tracing::warn!("Auto-migration skipped (table may already exist or DB issue): {e}");
+        }
+    }
+
     // ── Redis (optional) ──────────────────────────────────
     let redis = match std::env::var("REDIS_URL") {
         Ok(url) => match Redis::connect(&url).await {

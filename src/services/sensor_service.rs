@@ -62,19 +62,22 @@ pub async fn flush_sensor_buffer(redis: &Redis, pool: &PgPool) -> Result<usize, 
     let lux_ml:     Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_ml).collect();
     let lux_mr:     Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_mr).collect();
     let lux_r:      Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_r).collect();
-    let roter:      Vec<Option<i32>>  = payloads.iter().map(|p| p.roter_angle).collect();
+    let ina_v:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_voltage).collect();
+    let ina_c:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_current).collect();
+    let ina_p:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_power).collect();
     let sw_left:    Vec<Option<bool>> = payloads.iter().map(|p| p.limit_sw_left).collect();
     let sw_right:   Vec<Option<bool>> = payloads.iter().map(|p| p.limit_sw_right).collect();
 
     sqlx::query(
         r#"
         INSERT INTO sensor_readings
-            (lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-             roter_angle, limit_sw_left, limit_sw_right)
-        SELECT * FROM UNNEST(
+            (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
+             ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
+        SELECT date_trunc('minute', NOW()), * FROM UNNEST(
             $1::int4[], $2::int4[], $3::int4[], $4::int4[],
             $5::int4[], $6::int4[], $7::int4[],
-            $8::bool[], $9::bool[]
+            $8::int4[], $9::int4[], $10::int4[],
+            $11::bool[], $12::bool[]
         )
         "#,
     )
@@ -84,7 +87,9 @@ pub async fn flush_sensor_buffer(redis: &Redis, pool: &PgPool) -> Result<usize, 
     .bind(&lux_ml)
     .bind(&lux_mr)
     .bind(&lux_r)
-    .bind(&roter)
+    .bind(&ina_v)
+    .bind(&ina_c)
+    .bind(&ina_p)
     .bind(&sw_left)
     .bind(&sw_right)
     .execute(pool)
@@ -109,11 +114,11 @@ pub async fn insert_sensor_reading(
     let row = sqlx::query_as::<_, SensorReading>(
         r#"
         INSERT INTO sensor_readings
-            (lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-             roter_angle, limit_sw_left, limit_sw_right)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
+             ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
+        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-                  roter_angle, limit_sw_left, limit_sw_right
+                  ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
         "#,
     )
     .bind(payload.lux_left)
@@ -122,7 +127,9 @@ pub async fn insert_sensor_reading(
     .bind(payload.lux_ml)
     .bind(payload.lux_mr)
     .bind(payload.lux_r)
-    .bind(payload.roter_angle)
+    .bind(payload.ina_voltage)
+    .bind(payload.ina_current)
+    .bind(payload.ina_power)
     .bind(payload.limit_sw_left)
     .bind(payload.limit_sw_right)
     .fetch_one(pool)
@@ -157,7 +164,7 @@ pub async fn get_history_by_date(
     let readings = sqlx::query_as::<_, SensorReading>(
         r#"
         SELECT id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-               roter_angle, limit_sw_left, limit_sw_right
+               ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
         FROM sensor_readings
         WHERE time >= $1 AND time < $2
         ORDER BY time DESC
@@ -182,7 +189,7 @@ pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorReading>, 
     let reading = sqlx::query_as::<_, SensorReading>(
         r#"
         SELECT id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-               roter_angle, limit_sw_left, limit_sw_right
+               ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
         FROM sensor_readings
         ORDER BY time DESC
         LIMIT 1
@@ -202,9 +209,9 @@ pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorReading>, 
 pub async fn insert_heartbeat(pool: &PgPool) -> Result<(), AppError> {
     sqlx::query(
         r#"
-        INSERT INTO sensor_readings (lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-                                     roter_angle, limit_sw_left, limit_sw_right)
-        VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        INSERT INTO sensor_readings (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
+                                     ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
+        VALUES (date_trunc('minute', NOW()), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         "#,
     )
     .execute(pool)

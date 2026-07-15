@@ -18,8 +18,10 @@ pub struct SensorPayload {
     pub lux_mr: Option<i32>,
     pub lux_r: Option<i32>,
 
-    // Roter group (AS5600 + limit switches)
-    pub roter_angle: Option<i32>,
+    // Power monitor group (INA219) + limit switches
+    pub ina_voltage: Option<i32>,   // millivolts
+    pub ina_current: Option<i32>,   // milliamps
+    pub ina_power: Option<i32>,     // milliwatts
     pub limit_sw_left: Option<bool>,
     pub limit_sw_right: Option<bool>,
 }
