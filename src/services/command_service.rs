@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sqlx::PgPool;
+use sqlx::{PgPool, QueryBuilder, Postgres};
 
 use crate::error::AppError;
 use crate::models::command::ActiveCommand;
@@ -11,6 +11,17 @@ pub async fn insert_command(
     pool: &PgPool,
     payload: CreateCommandRequest,
 ) -> Result<CommandResponse, AppError> {
+    // Cancel any existing pending commands (only keep the latest one)
+    sqlx::query(
+        "UPDATE active_commands SET status = 2, completed_at = NOW() WHERE status = 0"
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to cancel previous pending commands: {e}");
+        AppError::Internal(format!("Failed to cancel previous pending commands: {e}"))
+    })?;
+
     let row = sqlx::query_as::<_, ActiveCommand>(
         r#"
         INSERT INTO active_commands (from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance)
@@ -105,26 +116,41 @@ pub async fn get_command_history(
     status_filter: Option<i16>,
     from_user_filter: Option<String>,
 ) -> Result<Vec<ActiveCommand>, AppError> {
-    let commands = sqlx::query_as::<_, ActiveCommand>(
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         r#"
         SELECT id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
         FROM active_commands
-        WHERE ($1::smallint IS NULL OR status = $1)
-          AND ($2::text IS NULL OR from_user = $2)
-        ORDER BY created_at DESC
-        LIMIT $3 OFFSET $4
+        WHERE 1=1
         "#,
-    )
-    .bind(status_filter)
-    .bind(from_user_filter)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Failed to query command history: {e}");
-        AppError::Internal(format!("Failed to query command history: {e}"))
-    })?;
+    );
+
+    if let Some(s) = status_filter {
+        builder.push(" AND status = ");
+        builder.push_bind(s);
+    }
+
+    if let Some(f) = from_user_filter {
+        builder.push(" AND from_user = ");
+        builder.push_bind(f);
+    }
+
+    builder.push(" ORDER BY created_at DESC");
+    
+    builder.push(" LIMIT ");
+    builder.push_bind(limit);
+    
+    builder.push(" OFFSET ");
+    builder.push_bind(offset);
+
+    let query = builder.build_query_as::<ActiveCommand>();
+
+    let commands = query
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to query command history: {e}");
+            AppError::Internal(format!("Failed to query command history: {e}"))
+        })?;
 
     Ok(commands)
 }

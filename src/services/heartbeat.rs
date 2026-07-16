@@ -43,6 +43,13 @@ pub fn spawn(
                     } else {
                         tracing::debug!("Heartbeat inserted");
                     }
+
+                    // ── 3. Auto-cancel stale commands (> 10 mins) ──
+                    if let Err(e) = sqlx::query(
+                        "UPDATE active_commands SET status = 2, completed_at = NOW() WHERE status = 0 AND created_at < NOW() - INTERVAL '10 minutes'"
+                    ).execute(&pool).await {
+                        tracing::warn!("Auto-cancel stale commands failed: {e}");
+                    }
                 }
                 _ = shutdown.changed() => {
                     // Final flush before shutting down — don't lose buffered data

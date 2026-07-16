@@ -66,6 +66,7 @@ volumes:
 
 networks:
   axum_net:
+    name: shared_app_net
     driver: bridge
   postgres_app_net:
     external: true
