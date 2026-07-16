@@ -1,20 +1,20 @@
-// src/models/command.rs
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-/// A motor rotation command — maps to the `roter_commands` table.
-#[derive(Debug, Serialize, FromRow)]
-pub struct Command {
+#[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
+pub struct ActiveCommand {
     pub id: i64,
     pub created_at: DateTime<Utc>,
-    pub source: String,
-    pub target_lux_l: Option<i32>,
-    pub target_lux_r: Option<i32>,
-    pub status: String,
-    pub executed_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub function_name: String,
+    pub from_user: String,
+    pub target_type: String,
+    pub target_value: Option<f32>,
+    pub target_left_ratio: Option<f32>,
+    pub target_right_ratio: Option<f32>,
+    pub tolerance: f32,
     pub lux_left: Option<i32>,
     pub lux_right: Option<i32>,
-    pub response_note: Option<String>,
+    pub status: i16,
 }

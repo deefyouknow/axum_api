@@ -1,31 +1,29 @@
-// src/services/command_service.rs
 use chrono::Utc;
 use sqlx::PgPool;
 
 use crate::error::AppError;
-use crate::models::command::Command;
+use crate::models::command::ActiveCommand;
 use crate::schemas::command::{
     CommandResponse, CreateCommandRequest, UpdateCommandRequest, UpdateCommandResponse,
 };
 
-/// Insert a new command into `roter_commands`.
 pub async fn insert_command(
     pool: &PgPool,
     payload: CreateCommandRequest,
 ) -> Result<CommandResponse, AppError> {
-    let source = payload.source.unwrap_or_else(|| "manual".to_string());
-
-    let row = sqlx::query_as::<_, Command>(
+    let row = sqlx::query_as::<_, ActiveCommand>(
         r#"
-        INSERT INTO roter_commands (source, target_lux_l, target_lux_r)
-        VALUES ($1, $2, $3)
-        RETURNING id, created_at, source, target_lux_l, target_lux_r, status,
-                  executed_at, completed_at, lux_left, lux_right, response_note
+        INSERT INTO active_commands (from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
         "#,
     )
-    .bind(&source)
-    .bind(payload.target_lux_l)
-    .bind(payload.target_lux_r)
+    .bind(payload.from_user)
+    .bind(payload.target_type)
+    .bind(payload.target_value)
+    .bind(payload.target_left_ratio)
+    .bind(payload.target_right_ratio)
+    .bind(payload.tolerance)
     .fetch_one(pool)
     .await
     .map_err(|e| {
@@ -36,21 +34,16 @@ pub async fn insert_command(
     Ok(CommandResponse {
         id: row.id,
         created_at: row.created_at,
-        source: row.source,
-        target_lux_l: row.target_lux_l,
-        target_lux_r: row.target_lux_r,
         status: row.status,
     })
 }
 
-/// Get all commands with status = 'pending', ordered by created_at ASC.
-pub async fn get_pending_commands(pool: &PgPool) -> Result<Vec<Command>, AppError> {
-    let commands = sqlx::query_as::<_, Command>(
+pub async fn get_pending_commands(pool: &PgPool) -> Result<Vec<ActiveCommand>, AppError> {
+    let commands = sqlx::query_as::<_, ActiveCommand>(
         r#"
-        SELECT id, created_at, source, target_lux_l, target_lux_r, status,
-               executed_at, completed_at, lux_left, lux_right, response_note
-        FROM roter_commands
-        WHERE status = 'pending'
+        SELECT id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
+        FROM active_commands
+        WHERE status = 0
         ORDER BY created_at ASC
         "#,
     )
@@ -64,7 +57,6 @@ pub async fn get_pending_commands(pool: &PgPool) -> Result<Vec<Command>, AppErro
     Ok(commands)
 }
 
-/// Update command response from ESP32.
 pub async fn update_command_response(
     pool: &PgPool,
     command_id: i64,
@@ -72,25 +64,20 @@ pub async fn update_command_response(
 ) -> Result<UpdateCommandResponse, AppError> {
     let now = Utc::now();
 
-    let row = sqlx::query_as::<_, Command>(
+    let row = sqlx::query_as::<_, ActiveCommand>(
         r#"
-        UPDATE roter_commands
-        SET status = $2,
-            lux_left = $3,
-            lux_right = $4,
-            response_note = $5,
-            executed_at = CASE WHEN $2 = 'executing' THEN $6 ELSE executed_at END,
-            completed_at = CASE WHEN $2 IN ('success', 'failed') THEN $6 ELSE completed_at END
+        UPDATE active_commands
+        SET status = 1,
+            lux_left = $2,
+            lux_right = $3,
+            completed_at = $4
         WHERE id = $1
-        RETURNING id, created_at, source, target_lux_l, target_lux_r, status,
-                  executed_at, completed_at, lux_left, lux_right, response_note
+        RETURNING id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
         "#,
     )
     .bind(command_id)
-    .bind(&payload.status)
     .bind(payload.lux_left)
     .bind(payload.lux_right)
-    .bind(&payload.response_note)
     .bind(now)
     .fetch_optional(pool)
     .await
@@ -111,16 +98,14 @@ pub async fn update_command_response(
     }
 }
 
-/// Get command history, ordered by created_at DESC with limit.
 pub async fn get_command_history(
     pool: &PgPool,
     limit: i64,
-) -> Result<Vec<Command>, AppError> {
-    let commands = sqlx::query_as::<_, Command>(
+) -> Result<Vec<ActiveCommand>, AppError> {
+    let commands = sqlx::query_as::<_, ActiveCommand>(
         r#"
-        SELECT id, created_at, source, target_lux_l, target_lux_r, status,
-               executed_at, completed_at, lux_left, lux_right, response_note
-        FROM roter_commands
+        SELECT id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
+        FROM active_commands
         ORDER BY created_at DESC
         LIMIT $1
         "#,

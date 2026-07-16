@@ -18,6 +18,7 @@ services:
         condition: service_healthy
     networks:
       - axum_net
+      - postgres_app_net
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
       interval: 30s
@@ -66,3 +67,5 @@ volumes:
 networks:
   axum_net:
     driver: bridge
+  postgres_app_net:
+    external: true

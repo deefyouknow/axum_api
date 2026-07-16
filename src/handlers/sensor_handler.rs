@@ -32,8 +32,7 @@ pub async fn post_sensor_reading(
 
         let resp = SensorInsertedResponse {
             success: true,
-            id: None,   // id is assigned by PostgreSQL on flush
-            time: None, // likewise — not yet persisted
+            message: "Buffered in Redis".to_string(),
         };
         return Ok((StatusCode::CREATED, Json(resp)));
     }

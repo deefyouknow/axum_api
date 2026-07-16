@@ -1,18 +1,14 @@
-// src/services/sensor_service.rs
 use chrono::{NaiveDate, Utc, Duration, TimeZone};
 use sqlx::PgPool;
 
 use crate::error::AppError;
-use crate::models::sensor::SensorReading;
+use crate::models::sensor::SensorLog;
 use crate::schemas::sensor::{SensorInsertedResponse, SensorPayload};
 use crate::services::redis_service::{
     Redis, SENSOR_BUFFER_BATCH, SENSOR_BUFFER_KEY, ttl::SENSOR_BUFFER,
 };
 
-// ── Redis write-buffer helpers ────────────────────────────────────────────────
-
 /// Serialize `payload` to JSON and push it onto the Redis sensor buffer.
-/// Returns immediately (~1 ms) — the actual INSERT happens in `flush_sensor_buffer`.
 pub async fn buffer_sensor_reading(
     redis: &Redis,
     payload: &SensorPayload,
@@ -23,115 +19,81 @@ pub async fn buffer_sensor_reading(
     Ok(())
 }
 
-/// Pull up to `SENSOR_BUFFER_BATCH` entries from Redis and INSERT them into
-/// PostgreSQL in a single `UNNEST`-based batch query.
-///
-/// Called by the background scheduler every 5 seconds.
-/// Safe to call even when the buffer is empty — returns immediately.
+/// We change the behavior to only get the *latest* reading from Redis (last-value)
+/// and insert it. Wait, the implementation plan says:
+/// "ดึงค่าล่าสุด (Last-Value) จาก Redis มา INSERT ลงตาราง sensor_logs"
+/// To do this, we can just pop the first element (the latest) and ignore the rest,
+/// or get all elements and take the first, then clear the list.
 pub async fn flush_sensor_buffer(redis: &Redis, pool: &PgPool) -> Result<usize, AppError> {
-    let items = redis
-        .lrange_and_trim(SENSOR_BUFFER_KEY, SENSOR_BUFFER_BATCH)
-        .await?;
+    // Get all items in the buffer, we only care about the latest one
+    let items = redis.lrange_and_trim(SENSOR_BUFFER_KEY, SENSOR_BUFFER_BATCH).await?;
 
     if items.is_empty() {
         return Ok(0);
     }
 
-    // Deserialize all items; skip malformed ones with a warning.
-    let payloads: Vec<SensorPayload> = items
-        .iter()
-        .filter_map(|s| match serde_json::from_str::<SensorPayload>(s) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                tracing::warn!("Skipping malformed sensor buffer entry: {e}");
-                None
-            }
-        })
-        .collect();
-
-    if payloads.is_empty() {
-        return Ok(0);
-    }
-
-    let n = payloads.len();
-
-    // Build UNNEST arrays — Option<i32>/Option<bool> map to NULL naturally via sqlx.
-    let lux_left:   Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_left).collect();
-    let lux_right:  Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_right).collect();
-    let lux_l:      Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_l).collect();
-    let lux_ml:     Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_ml).collect();
-    let lux_mr:     Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_mr).collect();
-    let lux_r:      Vec<Option<i32>>  = payloads.iter().map(|p| p.lux_r).collect();
-    let ina_v:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_voltage).collect();
-    let ina_c:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_current).collect();
-    let ina_p:      Vec<Option<i32>>  = payloads.iter().map(|p| p.ina_power).collect();
-    let sw_left:    Vec<Option<bool>> = payloads.iter().map(|p| p.limit_sw_left).collect();
-    let sw_right:   Vec<Option<bool>> = payloads.iter().map(|p| p.limit_sw_right).collect();
+    // The first item is the most recent (because we used lpush)
+    let latest_json = &items[0];
+    
+    let payload = match serde_json::from_str::<SensorPayload>(latest_json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Skipping malformed sensor buffer entry: {e}");
+            return Ok(0);
+        }
+    };
 
     sqlx::query(
         r#"
-        INSERT INTO sensor_readings
-            (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-             ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
-        SELECT date_trunc('minute', NOW()), * FROM UNNEST(
-            $1::int4[], $2::int4[], $3::int4[], $4::int4[],
-            $5::int4[], $6::int4[], $7::int4[],
-            $8::int4[], $9::int4[], $10::int4[],
-            $11::bool[], $12::bool[]
-        )
+        INSERT INTO sensor_logs
+            (timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+             voltage, current, power, is_online)
+        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
         "#,
     )
-    .bind(&lux_left)
-    .bind(&lux_right)
-    .bind(&lux_l)
-    .bind(&lux_ml)
-    .bind(&lux_mr)
-    .bind(&lux_r)
-    .bind(&ina_v)
-    .bind(&ina_c)
-    .bind(&ina_p)
-    .bind(&sw_left)
-    .bind(&sw_right)
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Batch INSERT sensor_readings failed: {e}");
-        AppError::Internal(format!("Batch INSERT failed: {e}"))
-    })?;
-
-    tracing::debug!("Flushed {n} sensor readings from Redis → PostgreSQL");
-    Ok(n)
-}
-
-// ── Direct DB write (fallback when Redis unavailable) ─────────────────────────
-
-/// Insert a single sensor reading into the unified `sensor_readings` table.
-/// All fields are nullable — only non-null fields are stored.
-pub async fn insert_sensor_reading(
-    pool: &PgPool,
-    payload: SensorPayload,
-) -> Result<SensorInsertedResponse, AppError> {
-    let row = sqlx::query_as::<_, SensorReading>(
-        r#"
-        INSERT INTO sensor_readings
-            (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-             ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
-        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-                  ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
-        "#,
-    )
-    .bind(payload.lux_left)
-    .bind(payload.lux_right)
     .bind(payload.lux_l)
     .bind(payload.lux_ml)
     .bind(payload.lux_mr)
     .bind(payload.lux_r)
-    .bind(payload.ina_voltage)
-    .bind(payload.ina_current)
-    .bind(payload.ina_power)
-    .bind(payload.limit_sw_left)
-    .bind(payload.limit_sw_right)
+    .bind(payload.lux_panel_left)
+    .bind(payload.lux_panel_right)
+    .bind(payload.voltage)
+    .bind(payload.current)
+    .bind(payload.power)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("INSERT sensor_logs failed: {e}");
+        AppError::Internal(format!("INSERT failed: {e}"))
+    })?;
+
+    tracing::debug!("Flushed latest sensor reading from Redis → PostgreSQL");
+    Ok(1)
+}
+
+pub async fn insert_sensor_reading(
+    pool: &PgPool,
+    payload: SensorPayload,
+) -> Result<SensorInsertedResponse, AppError> {
+    let row = sqlx::query_as::<_, SensorLog>(
+        r#"
+        INSERT INTO sensor_logs
+            (timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+             voltage, current, power, is_online)
+        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        RETURNING id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+                  voltage, current, power, is_online
+        "#,
+    )
+    .bind(payload.lux_l)
+    .bind(payload.lux_ml)
+    .bind(payload.lux_mr)
+    .bind(payload.lux_r)
+    .bind(payload.lux_panel_left)
+    .bind(payload.lux_panel_right)
+    .bind(payload.voltage)
+    .bind(payload.current)
+    .bind(payload.power)
     .fetch_one(pool)
     .await
     .map_err(|e| {
@@ -141,33 +103,28 @@ pub async fn insert_sensor_reading(
 
     Ok(SensorInsertedResponse {
         success: true,
-        id: Some(row.id),
-        time: Some(row.time),
+        message: "Inserted directly to DB".to_string(),
     })
 }
 
-// ── Query helpers ─────────────────────────────────────────────────────────────
-
-/// Query sensor readings for a specific date (YYYY-MM-DD).
-/// Uses partition-aware query: WHERE time >= date AND time < date+1
 pub async fn get_history_by_date(
     pool: &PgPool,
     date_str: &str,
     limit: i64,
-) -> Result<Vec<SensorReading>, AppError> {
+) -> Result<Vec<SensorLog>, AppError> {
     let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
         .map_err(|_| AppError::BadRequest(format!("Invalid date format: '{date_str}'. Expected YYYY-MM-DD")))?;
 
     let start = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
     let end = start + Duration::days(1);
 
-    let readings = sqlx::query_as::<_, SensorReading>(
+    let readings = sqlx::query_as::<_, SensorLog>(
         r#"
-        SELECT id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-               ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
-        FROM sensor_readings
-        WHERE time >= $1 AND time < $2
-        ORDER BY time DESC
+        SELECT id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+               voltage, current, power, is_online
+        FROM sensor_logs
+        WHERE timestamp_slot >= $1 AND timestamp_slot < $2
+        ORDER BY timestamp_slot DESC
         LIMIT $3
         "#,
     )
@@ -184,14 +141,13 @@ pub async fn get_history_by_date(
     Ok(readings)
 }
 
-/// Get the most recent sensor reading (latest row across all partitions).
-pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorReading>, AppError> {
-    let reading = sqlx::query_as::<_, SensorReading>(
+pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorLog>, AppError> {
+    let reading = sqlx::query_as::<_, SensorLog>(
         r#"
-        SELECT id, time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-               ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right
-        FROM sensor_readings
-        ORDER BY time DESC
+        SELECT id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+               voltage, current, power, is_online
+        FROM sensor_logs
+        ORDER BY timestamp_slot DESC
         LIMIT 1
         "#,
     )
@@ -205,13 +161,12 @@ pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorReading>, 
     Ok(reading)
 }
 
-/// Insert a heartbeat row (all null fields) — called by the scheduler every 5s.
 pub async fn insert_heartbeat(pool: &PgPool) -> Result<(), AppError> {
     sqlx::query(
         r#"
-        INSERT INTO sensor_readings (time, lux_left, lux_right, lux_l, lux_ml, lux_mr, lux_r,
-                                     ina_voltage, ina_current, ina_power, limit_sw_left, limit_sw_right)
-        VALUES (date_trunc('minute', NOW()), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        INSERT INTO sensor_logs (timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+                                 voltage, current, power, is_online)
+        VALUES (date_trunc('minute', NOW()), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, FALSE)
         "#,
     )
     .execute(pool)
