@@ -39,3 +39,8 @@ pub struct SensorHistoryResponse {
 pub struct SensorLatestResponse {
     pub reading: Option<SensorLog>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct AvailableDatesResponse {
+    pub dates: Vec<String>,
+}

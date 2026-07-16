@@ -178,3 +178,21 @@ pub async fn insert_heartbeat(pool: &PgPool) -> Result<(), AppError> {
 
     Ok(())
 }
+
+pub async fn get_available_dates(pool: &PgPool) -> Result<Vec<String>, AppError> {
+    let dates = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT to_char(timestamp_slot, 'YYYY-MM-DD') as date
+        FROM sensor_logs
+        ORDER BY date DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to query available dates: {e}");
+        AppError::Internal(format!("Failed to query available dates: {e}"))
+    })?;
+
+    Ok(dates)
+}

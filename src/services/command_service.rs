@@ -101,16 +101,24 @@ pub async fn update_command_response(
 pub async fn get_command_history(
     pool: &PgPool,
     limit: i64,
+    offset: i64,
+    status_filter: Option<i16>,
+    from_user_filter: Option<String>,
 ) -> Result<Vec<ActiveCommand>, AppError> {
     let commands = sqlx::query_as::<_, ActiveCommand>(
         r#"
         SELECT id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
         FROM active_commands
+        WHERE ($1::smallint IS NULL OR status = $1)
+          AND ($2::text IS NULL OR from_user = $2)
         ORDER BY created_at DESC
-        LIMIT $1
+        LIMIT $3 OFFSET $4
         "#,
     )
+    .bind(status_filter)
+    .bind(from_user_filter)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await
     .map_err(|e| {
@@ -119,4 +127,26 @@ pub async fn get_command_history(
     })?;
 
     Ok(commands)
+}
+
+pub async fn get_command_by_id(
+    pool: &PgPool,
+    id: i64,
+) -> Result<Option<ActiveCommand>, AppError> {
+    let command = sqlx::query_as::<_, ActiveCommand>(
+        r#"
+        SELECT id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
+        FROM active_commands
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to get command {id}: {e}");
+        AppError::Internal(format!("Failed to get command: {e}"))
+    })?;
+
+    Ok(command)
 }

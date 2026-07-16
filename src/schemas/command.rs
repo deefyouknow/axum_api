@@ -35,10 +35,18 @@ pub struct UpdateCommandResponse {
 #[derive(Debug, Deserialize)]
 pub struct CommandHistoryQuery {
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub status: Option<i16>,
+    pub from_user: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CommandListResponse {
     pub commands: Vec<ActiveCommand>,
     pub count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommandSingleResponse {
+    pub command: Option<ActiveCommand>,
 }

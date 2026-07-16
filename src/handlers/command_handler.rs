@@ -43,13 +43,30 @@ pub async fn update_command_response(
     Ok(Json(result))
 }
 
-/// GET /commands/history?limit=50 — view command history
+/// GET /commands/history?limit=50&offset=0&status=1&from_user=ML_AI
 pub async fn get_command_history(
     State(state): State<AppState>,
     Query(params): Query<CommandHistoryQuery>,
 ) -> Result<Json<CommandListResponse>, AppError> {
     let limit = params.limit.unwrap_or(50);
-    let commands = command_service::get_command_history(&state.db, limit).await?;
+    let offset = params.offset.unwrap_or(0);
+    
+    let commands = command_service::get_command_history(
+        &state.db, 
+        limit, 
+        offset, 
+        params.status, 
+        params.from_user
+    ).await?;
     let count = commands.len();
     Ok(Json(CommandListResponse { commands, count }))
+}
+
+/// GET /commands/:id
+pub async fn get_command_by_id(
+    State(state): State<AppState>,
+    Path(command_id): Path<i64>,
+) -> Result<Json<crate::schemas::command::CommandSingleResponse>, AppError> {
+    let command = command_service::get_command_by_id(&state.db, command_id).await?;
+    Ok(Json(crate::schemas::command::CommandSingleResponse { command }))
 }

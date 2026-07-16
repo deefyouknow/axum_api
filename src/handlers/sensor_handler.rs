@@ -71,3 +71,12 @@ pub async fn get_sensor_latest(
     let reading = sensor_service::get_latest_reading(&state.db).await?;
     Ok(Json(SensorLatestResponse { reading }))
 }
+
+/// GET /sensors/available-dates
+/// Returns a list of dates that have sensor readings available.
+pub async fn get_available_dates(
+    State(state): State<AppState>,
+) -> Result<Json<crate::schemas::sensor::AvailableDatesResponse>, AppError> {
+    let dates = sensor_service::get_available_dates(&state.db).await?;
+    Ok(Json(crate::schemas::sensor::AvailableDatesResponse { dates }))
+}
