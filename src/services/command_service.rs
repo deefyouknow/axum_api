@@ -74,19 +74,21 @@ pub async fn update_command_response(
     payload: UpdateCommandRequest,
 ) -> Result<UpdateCommandResponse, AppError> {
     let now = Utc::now();
+    let new_status = payload.status.unwrap_or(1);
 
     let row = sqlx::query_as::<_, ActiveCommand>(
         r#"
         UPDATE active_commands
-        SET status = 1,
-            lux_left = $2,
-            lux_right = $3,
-            completed_at = $4
+        SET status = $2,
+            lux_left = $3,
+            lux_right = $4,
+            completed_at = $5
         WHERE id = $1
         RETURNING id, created_at, completed_at, function_name, from_user, target_type, target_value, target_left_ratio, target_right_ratio, tolerance, lux_left, lux_right, status
         "#,
     )
     .bind(command_id)
+    .bind(new_status)
     .bind(payload.lux_left)
     .bind(payload.lux_right)
     .bind(now)

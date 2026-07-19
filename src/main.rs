@@ -84,6 +84,36 @@ async fn main() {
         }
     }
 
+    // ── Auto-migration: ensure sensor_current_reading table exists ─────────────
+    match sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sensor_current_reading (
+            id              INTEGER     PRIMARY KEY DEFAULT 0 CHECK (id = 0),
+            timestamp_slot  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            lux_l           INTEGER,
+            lux_ml          INTEGER,
+            lux_mr          INTEGER,
+            lux_r           INTEGER,
+            lux_panel_left  INTEGER,
+            lux_panel_right INTEGER,
+            voltage         REAL,
+            current         REAL,
+            power           REAL,
+            is_online       BOOLEAN     NOT NULL DEFAULT TRUE
+        )"
+    )
+    .execute(&pool)
+    .await
+    {
+        Ok(_) => {
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_sensor_current_timestamp ON sensor_current_reading (timestamp_slot DESC)")
+                .execute(&pool).await.ok();
+            tracing::info!("Auto-migration: sensor_current_reading table ready");
+        }
+        Err(e) => {
+            tracing::warn!("Auto-migration sensor_current_reading skipped: {e}");
+        }
+    }
+
     // ── Redis (optional) ──────────────────────────────────
     let redis = match std::env::var("REDIS_URL") {
         Ok(url) => match Redis::connect(&url).await {

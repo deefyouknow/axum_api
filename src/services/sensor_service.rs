@@ -5,50 +5,55 @@ use crate::error::AppError;
 use crate::models::sensor::SensorLog;
 use crate::schemas::sensor::{SensorInsertedResponse, SensorPayload};
 use crate::services::redis_service::{
-    Redis, SENSOR_BUFFER_BATCH, SENSOR_BUFFER_KEY, ttl::SENSOR_BUFFER,
+    Redis, SENSOR_CURRENT_KEY, ttl::SENSOR_CURRENT,
 };
 
-/// Serialize `payload` to JSON and push it onto the Redis sensor buffer.
+/// Serialize `payload` to JSON and store as the latest reading in Redis (SET, not LPUSH).
+/// TTL = 60 seconds — ถ้าไม่มีใคร post lux มา 1 นาที ถึงจะล้างข้อมูล
 pub async fn buffer_sensor_reading(
     redis: &Redis,
     payload: &SensorPayload,
 ) -> Result<(), AppError> {
     let json = serde_json::to_string(payload)
         .map_err(|e| AppError::Internal(format!("JSON serialize error: {e}")))?;
-    redis.lpush(SENSOR_BUFFER_KEY, &json, SENSOR_BUFFER).await?;
+    redis.set(SENSOR_CURRENT_KEY, &json, SENSOR_CURRENT).await?;
     Ok(())
 }
 
-/// We change the behavior to only get the *latest* reading from Redis (last-value)
-/// and insert it. Wait, the implementation plan says:
-/// "ดึงค่าล่าสุด (Last-Value) จาก Redis มา INSERT ลงตาราง sensor_logs"
-/// To do this, we can just pop the first element (the latest) and ignore the rest,
-/// or get all elements and take the first, then clear the list.
-pub async fn flush_sensor_buffer(redis: &Redis, pool: &PgPool) -> Result<usize, AppError> {
-    // Get all items in the buffer, we only care about the latest one
-    let items = redis.lrange_and_trim(SENSOR_BUFFER_KEY, SENSOR_BUFFER_BATCH).await?;
+/// Flush the latest sensor reading from Redis → PostgreSQL (UPSERT on fixed ID = 0).
+/// อัพเดท row เดิมแทนที่จะสร้าง row ใหม่ทุกครั้ง
+pub async fn flush_current_reading(redis: &Redis, pool: &PgPool) -> Result<usize, AppError> {
+    let json = match redis.get(SENSOR_CURRENT_KEY).await? {
+        Some(j) => j,
+        None => return Ok(0), // key expired or never set
+    };
 
-    if items.is_empty() {
-        return Ok(0);
-    }
-
-    // The first item is the most recent (because we used lpush)
-    let latest_json = &items[0];
-    
-    let payload = match serde_json::from_str::<SensorPayload>(latest_json) {
+    let payload = match serde_json::from_str::<SensorPayload>(&json) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!("Skipping malformed sensor buffer entry: {e}");
+            tracing::warn!("Skipping malformed sensor current reading: {e}");
             return Ok(0);
         }
     };
 
     sqlx::query(
         r#"
-        INSERT INTO sensor_logs
-            (timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+        INSERT INTO sensor_current_reading
+            (id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
              voltage, current, power, is_online)
-        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        VALUES (0, NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        ON CONFLICT (id) DO UPDATE SET
+            timestamp_slot = EXCLUDED.timestamp_slot,
+            lux_l          = EXCLUDED.lux_l,
+            lux_ml         = EXCLUDED.lux_ml,
+            lux_mr         = EXCLUDED.lux_mr,
+            lux_r          = EXCLUDED.lux_r,
+            lux_panel_left = EXCLUDED.lux_panel_left,
+            lux_panel_right= EXCLUDED.lux_panel_right,
+            voltage        = EXCLUDED.voltage,
+            current        = EXCLUDED.current,
+            power          = EXCLUDED.power,
+            is_online      = TRUE
         "#,
     )
     .bind(payload.lux_l)
@@ -63,11 +68,11 @@ pub async fn flush_sensor_buffer(redis: &Redis, pool: &PgPool) -> Result<usize, 
     .execute(pool)
     .await
     .map_err(|e| {
-        tracing::error!("INSERT sensor_logs failed: {e}");
-        AppError::Internal(format!("INSERT failed: {e}"))
+        tracing::error!("UPSERT sensor_current_reading failed: {e}");
+        AppError::Internal(format!("UPSERT failed: {e}"))
     })?;
 
-    tracing::debug!("Flushed latest sensor reading from Redis → PostgreSQL");
+    tracing::debug!("Flushed current sensor reading from Redis → PostgreSQL (UPSERT id=0)");
     Ok(1)
 }
 
@@ -75,14 +80,25 @@ pub async fn insert_sensor_reading(
     pool: &PgPool,
     payload: SensorPayload,
 ) -> Result<SensorInsertedResponse, AppError> {
-    let row = sqlx::query_as::<_, SensorLog>(
+    // UPSERT ลง sensor_current_reading (id=0) — อัพเดทค่าล่าสุด
+    sqlx::query(
         r#"
-        INSERT INTO sensor_logs
-            (timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+        INSERT INTO sensor_current_reading
+            (id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
              voltage, current, power, is_online)
-        VALUES (date_trunc('minute', NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
-        RETURNING id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
-                  voltage, current, power, is_online
+        VALUES (0, NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        ON CONFLICT (id) DO UPDATE SET
+            timestamp_slot = EXCLUDED.timestamp_slot,
+            lux_l          = EXCLUDED.lux_l,
+            lux_ml         = EXCLUDED.lux_ml,
+            lux_mr         = EXCLUDED.lux_mr,
+            lux_r          = EXCLUDED.lux_r,
+            lux_panel_left = EXCLUDED.lux_panel_left,
+            lux_panel_right= EXCLUDED.lux_panel_right,
+            voltage        = EXCLUDED.voltage,
+            current        = EXCLUDED.current,
+            power          = EXCLUDED.power,
+            is_online      = TRUE
         "#,
     )
     .bind(payload.lux_l)
@@ -94,16 +110,16 @@ pub async fn insert_sensor_reading(
     .bind(payload.voltage)
     .bind(payload.current)
     .bind(payload.power)
-    .fetch_one(pool)
+    .execute(pool)
     .await
     .map_err(|e| {
-        tracing::error!("Failed to insert sensor reading: {e}");
-        AppError::Internal(format!("Failed to insert sensor reading: {e}"))
+        tracing::error!("UPSERT sensor_current_reading (slow path) failed: {e}");
+        AppError::Internal(format!("UPSERT failed: {e}"))
     })?;
 
     Ok(SensorInsertedResponse {
         success: true,
-        message: "Inserted directly to DB".to_string(),
+        message: "Upserted current reading to DB".to_string(),
     })
 }
 
@@ -142,12 +158,13 @@ pub async fn get_history_by_date(
 }
 
 pub async fn get_latest_reading(pool: &PgPool) -> Result<Option<SensorLog>, AppError> {
+    // อ่านจาก sensor_current_reading (row เดียว id=0) — ค่าล่าสุดที่เสถียร
     let reading = sqlx::query_as::<_, SensorLog>(
         r#"
-        SELECT id, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
+        SELECT id::BIGINT, timestamp_slot, lux_l, lux_ml, lux_mr, lux_r, lux_panel_left, lux_panel_right,
                voltage, current, power, is_online
-        FROM sensor_logs
-        ORDER BY timestamp_slot DESC
+        FROM sensor_current_reading
+        WHERE is_online = TRUE
         LIMIT 1
         "#,
     )

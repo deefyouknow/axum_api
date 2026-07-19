@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 use crate::models::sensor::SensorLog;
 
 /// POST /api/sensors/reading — payload from ESP32

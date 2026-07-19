@@ -21,6 +21,7 @@ pub struct CommandResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateCommandRequest {
+    pub status: Option<i16>,
     pub lux_left: Option<i32>,
     pub lux_right: Option<i32>,
 }
