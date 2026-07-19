@@ -2,8 +2,8 @@
 //
 // Background scheduler — two tasks share a single shutdown signal:
 //
-//  1. Sensor flusher        — every 60 s: read Redis → UPSERT PostgreSQL (id=0)
-//  2. Heartbeat inserter    — every 60 s: insert an all-NULL row so the dashboard
+//  1. Sensor buffer flusher  — every 5 s: drain Redis → batch INSERT PostgreSQL
+//  2. Heartbeat inserter     — every 5 s: insert an all-NULL row so the dashboard
 //                              knows the server is alive even between real readings
 //
 // Both tasks log warnings on error but never crash the server.
@@ -22,19 +22,18 @@ pub fn spawn(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     tokio::spawn(async move {
-        // 60 วินาที — sync กับ Redis TTL (SENSOR_CURRENT = 60s)
-        let mut interval = time::interval(Duration::from_secs(60));
+        let mut interval = time::interval(Duration::from_secs(5));
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    // ── 1. Flush current sensor reading (Redis → PostgreSQL) ──
+                    // ── 1. Flush sensor write-buffer (Redis → PostgreSQL) ──
                     if let Some(ref r) = redis {
-                        match sensor_service::flush_current_reading(r, &pool).await {
-                            Ok(0) => {} // no data in Redis — no log noise
-                            Ok(n) => tracing::info!("Flushed {n} current sensor reading → PostgreSQL"),
-                            Err(e) => tracing::warn!("Sensor flush failed: {e}"),
+                        match sensor_service::flush_sensor_buffer(r, &pool).await {
+                            Ok(0) => {} // buffer was empty — no log noise
+                            Ok(n) => tracing::info!("Flushed {n} sensor readings → PostgreSQL"),
+                            Err(e) => tracing::warn!("Sensor buffer flush failed: {e}"),
                         }
                     }
 
@@ -55,8 +54,8 @@ pub fn spawn(
                 _ = shutdown.changed() => {
                     // Final flush before shutting down — don't lose buffered data
                     if let Some(ref r) = redis {
-                        tracing::info!("Scheduler shutting down — performing final flush");
-                        match sensor_service::flush_current_reading(r, &pool).await {
+                        tracing::info!("Scheduler shutting down — performing final buffer flush");
+                        match sensor_service::flush_sensor_buffer(r, &pool).await {
                             Ok(n) => tracing::info!("Final flush: {n} rows written"),
                             Err(e) => tracing::warn!("Final flush failed: {e}"),
                         }
