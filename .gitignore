@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target/
+/.worktrees/
 .env
 /src/app/bin
 
