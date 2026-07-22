@@ -13,12 +13,12 @@ pub mod ttl {
     pub const SENSOR_BUFFER: u64 = 300;
 }
 
-/// Maximum number of rows pulled from the buffer in one flush cycle.
-/// 100 rows × ~200 bytes ≈ 20 KB — safe for a single INSERT statement.
-pub const SENSOR_BUFFER_BATCH: isize = 100;
-
 /// Redis list key used as the sensor write-buffer.
 pub const SENSOR_BUFFER_KEY: &str = "sensor:buffer";
+
+fn latest_buffer_index() -> i64 {
+    0
+}
 
 /// Thin Redis wrapper — all writes require a TTL.
 #[derive(Clone)]
@@ -82,42 +82,25 @@ impl Redis {
         Ok(())
     }
 
-    /// Atomically pull up to `count` items from the *tail* of the list (oldest first,
-    /// because we LPUSH) and trim them away — returns the drained items.
-    ///
-    /// Uses a Lua script so LRANGE + LTRIM are atomic: no item is lost even if the
-    /// server crashes between the two commands.
-    pub async fn lrange_and_trim(
-        &self,
-        key: &str,
-        count: isize,
-    ) -> Result<Vec<String>, AppError> {
+    /// Atomically return the newest LPUSH item and clear the interval backlog.
+    pub async fn take_latest_and_clear(&self, key: &str) -> Result<Option<String>, AppError> {
         let mut conn = self.conn.clone();
-
-        // Lua: atomically read the oldest `count` items then remove them.
-        // Items are stored newest-first (LPUSH), so "oldest" = tail of list.
-        // LRANGE -count -1  → last `count` elements (oldest)
-        // LTRIM  0  -(count+1) → keep everything except those last `count` elements
         let script = redis::Script::new(
             r#"
-            local key   = KEYS[1]
-            local n     = tonumber(ARGV[1])
-            local items = redis.call('LRANGE', key, -n, -1)
-            if #items > 0 then
-                redis.call('LTRIM', key, 0, -(#items + 1))
+            local latest = redis.call('LINDEX', KEYS[1], ARGV[1])
+            if latest then
+                redis.call('DEL', KEYS[1])
             end
-            return items
+            return latest
             "#,
         );
 
-        let items: Vec<String> = script
+        script
             .key(key)
-            .arg(count)
+            .arg(latest_buffer_index())
             .invoke_async(&mut conn)
             .await
-            .map_err(|e| AppError::Internal(format!("Redis lrange_and_trim error: {e}")))?;
-
-        Ok(items)
+            .map_err(|e| AppError::Internal(format!("Redis take latest error: {e}")))
     }
 
     /// LLEN — number of items currently in the buffer (for metrics / logging).
@@ -129,5 +112,15 @@ impl Redis {
             .await
             .map_err(|e| AppError::Internal(format!("Redis LLEN error: {e}")))?;
         Ok(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::latest_buffer_index;
+
+    #[test]
+    fn test_latest_buffer_index_lpush_order_returns_head() {
+        assert_eq!(latest_buffer_index(), 0);
     }
 }
